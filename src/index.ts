@@ -17,6 +17,15 @@ type PaymentAuthorizationRequest = {
   paymentMethodId: string;
 };
 
+type PaymentCaptureRequest = {
+  amount: number;
+};
+
+type PaymentRefundRequest = {
+  amount: number;
+  reason: string;
+};
+
 type AnalyticsNotificationEvent = {
   notificationId: string;
   requestId: string;
@@ -84,6 +93,66 @@ app.post('/payments/authorize', (req: Request, res: Response) => {
     orderId: payload.orderId as string,
     status: 'AUTHORIZED',
     authorizedAmount: amount
+  });
+});
+
+app.post('/payments/:paymentId/capture', (req: Request, res: Response) => {
+  const { paymentId } = req.params;
+  const payload = (req.body ?? {}) as Partial<PaymentCaptureRequest>;
+  const amount = payload.amount;
+
+  if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) {
+    res.status(400).json({ error: 'Invalid capture request' });
+    return;
+  }
+
+  publishAnalyticsNotification({
+    notificationId: randomUUID(),
+    requestId: paymentId,
+    title: 'PaymentCaptured',
+    body: `Payment ${paymentId} captured`,
+    priority: 'NORMAL'
+  });
+
+  res.status(200).json({
+    paymentId,
+    status: 'CAPTURED',
+    capturedAmount: amount,
+    capturedAt: new Date().toISOString()
+  });
+});
+
+app.post('/payments/:paymentId/refund', (req: Request, res: Response) => {
+  const { paymentId } = req.params;
+  const payload = (req.body ?? {}) as Partial<PaymentRefundRequest>;
+  const amount = payload.amount;
+
+  if (
+    typeof amount !== 'number' ||
+    !Number.isFinite(amount) ||
+    amount < 0.01 ||
+    typeof payload.reason !== 'string' ||
+    payload.reason.length > 256
+  ) {
+    res.status(400).json({ error: 'Invalid refund request' });
+    return;
+  }
+
+  const refundId = randomUUID();
+  publishAnalyticsNotification({
+    notificationId: randomUUID(),
+    requestId: paymentId,
+    title: 'PaymentRefunded',
+    body: `Refund ${refundId} requested for payment ${paymentId}`,
+    priority: 'NORMAL'
+  });
+
+  res.status(200).json({
+    paymentId,
+    refundId,
+    status: 'REFUNDED',
+    refundedAmount: amount,
+    refundedAt: new Date().toISOString()
   });
 });
 
