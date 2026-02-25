@@ -2,6 +2,12 @@ version: 3
 systemUnderTest:
   service:
     $ref: "#/components/services/paymentService"
+dependencies:
+  services:
+    - service:
+        $ref: "#/components/services/notificationServiceEvents"
+        runOptions:
+          $ref: "#/components/runOptions/notificationServiceEventsMock"
 components:
   sources:
     centralContractRepo:
@@ -17,3 +23,19 @@ components:
             specs:
               - spec:
                   path: "contracts/services/payment-service/http/openapi.yaml"
+    notificationServiceEvents:
+      description: "Notification Service events dependency"
+      definitions:
+        - definition:
+            source:
+              $ref: "#/components/sources/centralContractRepo"
+            specs:
+              - spec:
+                  path: "contracts/services/notification-service/events/asyncapi.yaml"
+  runOptions:
+    notificationServiceEventsMock:
+      asyncapi:
+        type: mock
+        servers:
+          - host: tcp://localhost:1883
+            protocol: mqtt
