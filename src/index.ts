@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import express, { type Request, type Response } from 'express';
-import mqtt from 'mqtt';
+import { Kafka, type Producer } from 'kafkajs';
 import type {
   AnalyticsNotificationEvent,
   PaymentAuthorizationRequest,
@@ -13,46 +13,37 @@ app.use(express.json({ limit: '1mb' }));
 
 const host = process.env.PAYMENT_HOST || '0.0.0.0';
 const port = Number.parseInt(process.env.PAYMENT_PORT || '9000', 10);
-const analyticsMqttUrl = process.env.ANALYTICS_MQTT_URL || 'mqtt://localhost:1883';
-const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification/user';
+const analyticsKafkaBrokers = (process.env.ANALYTICS_KAFKA_BROKERS || 'localhost:9092')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+const analyticsNotificationTopic = process.env.ANALYTICS_NOTIFICATION_TOPIC || 'notification.user';
 
-function publishAnalyticsNotification(event: AnalyticsNotificationEvent): void {
-  const client = mqtt.connect(analyticsMqttUrl, { reconnectPeriod: 0, connectTimeout: 1000 });
-  const payload = JSON.stringify(event);
-  let completed = false;
+const kafka = new Kafka({
+  clientId: 'payment-service-analytics',
+  brokers: analyticsKafkaBrokers
+});
+const analyticsProducer: Producer = kafka.producer();
+let analyticsProducerConnected = false;
 
-  const done = (): void => {
-    if (completed) {
-      return;
-    }
+async function ensureAnalyticsProducerConnected(): Promise<void> {
+  if (analyticsProducerConnected) {
+    return;
+  }
 
-    completed = true;
-    client.end(true);
-  };
+  await analyticsProducer.connect();
+  analyticsProducerConnected = true;
+}
 
-  const timeout = setTimeout(() => {
-    done();
-  }, 1500);
-
-  client.once('connect', () => {
-    client.publish(analyticsNotificationTopic, payload, { qos: 1 }, (error?: Error | null) => {
-      if (error) {
-        console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${error.message}`);
-      }
-
-      clearTimeout(timeout);
-      done();
-    });
-  });
-
-  client.once('error', (error: Error) => {
-    console.error(`Failed to connect to analytics MQTT broker (${analyticsMqttUrl}): ${error.message}`);
-    clearTimeout(timeout);
-    done();
+async function publishAnalyticsNotification(event: AnalyticsNotificationEvent): Promise<void> {
+  await ensureAnalyticsProducerConnected();
+  await analyticsProducer.send({
+    topic: analyticsNotificationTopic,
+    messages: [{ key: event.requestId, value: JSON.stringify(event) }]
   });
 }
 
-app.post('/payments/authorize', (req: Request, res: Response) => {
+app.post('/payments/authorize', async (req: Request, res: Response) => {
   const payload = (req.body ?? {}) as Partial<PaymentAuthorizationRequest>;
   const amount = payload.amount;
 
@@ -62,13 +53,18 @@ app.post('/payments/authorize', (req: Request, res: Response) => {
   }
 
   const paymentId = randomUUID();
-  publishAnalyticsNotification({
-    notificationId: randomUUID(),
-    requestId: payload.orderId,
-    title: 'PaymentAuthorized',
-    body: `Payment ${paymentId} authorized for order ${payload.orderId}`,
-    priority: 'HIGH'
-  });
+  try {
+    await publishAnalyticsNotification({
+      notificationId: randomUUID(),
+      requestId: payload.orderId,
+      title: 'PaymentAuthorized',
+      body: `Payment ${paymentId} authorized for order ${payload.orderId}`,
+      priority: 'HIGH'
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${message}`);
+  }
 
   res.status(200).json({
     paymentId,
@@ -78,7 +74,7 @@ app.post('/payments/authorize', (req: Request, res: Response) => {
   });
 });
 
-app.post('/payments/:paymentId/capture', (req: Request, res: Response) => {
+app.post('/payments/:paymentId/capture', async (req: Request, res: Response) => {
   const { paymentId } = req.params;
   const payload = (req.body ?? {}) as Partial<PaymentCaptureRequest>;
   const amount = payload.amount;
@@ -88,13 +84,18 @@ app.post('/payments/:paymentId/capture', (req: Request, res: Response) => {
     return;
   }
 
-  publishAnalyticsNotification({
-    notificationId: randomUUID(),
-    requestId: paymentId,
-    title: 'PaymentCaptured',
-    body: `Payment ${paymentId} captured`,
-    priority: 'NORMAL'
-  });
+  try {
+    await publishAnalyticsNotification({
+      notificationId: randomUUID(),
+      requestId: paymentId,
+      title: 'PaymentCaptured',
+      body: `Payment ${paymentId} captured`,
+      priority: 'NORMAL'
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${message}`);
+  }
 
   res.status(200).json({
     paymentId,
@@ -104,7 +105,7 @@ app.post('/payments/:paymentId/capture', (req: Request, res: Response) => {
   });
 });
 
-app.post('/payments/:paymentId/refund', (req: Request, res: Response) => {
+app.post('/payments/:paymentId/refund', async (req: Request, res: Response) => {
   const { paymentId } = req.params;
   const payload = (req.body ?? {}) as Partial<PaymentRefundRequest>;
   const amount = payload.amount;
@@ -121,13 +122,18 @@ app.post('/payments/:paymentId/refund', (req: Request, res: Response) => {
   }
 
   const refundId = randomUUID();
-  publishAnalyticsNotification({
-    notificationId: randomUUID(),
-    requestId: paymentId,
-    title: 'PaymentRefunded',
-    body: `Refund ${refundId} requested for payment ${paymentId}`,
-    priority: 'NORMAL'
-  });
+  try {
+    await publishAnalyticsNotification({
+      notificationId: randomUUID(),
+      requestId: paymentId,
+      title: 'PaymentRefunded',
+      body: `Refund ${refundId} requested for payment ${paymentId}`,
+      priority: 'NORMAL'
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to publish analytics notification on ${analyticsNotificationTopic}: ${message}`);
+  }
 
   res.status(200).json({
     paymentId,
